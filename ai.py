@@ -1,28 +1,24 @@
 import numpy as np
 from board import Board
-from game_logic import check_game_state
+from game_logic import get_reward, check_game_state
 
+# Constants for AI
 num_states = 3**9
 num_actions = 9  # Maximum number of actions per state
 Q_table = np.zeros((num_states, num_actions))
 
-# Define the initial and final epsilon values, as well as the number of episodes for the reduction
+# AI Parameters
 initial_epsilon = 1
-final_epsilon = 0.1
-epsilon_reduction_episodes = 400000  # Adjust this based on your preference
-
-# Define gamma and alpha here
-gamma = 0.9  # Adjust as needed
-alpha = 0.2  # Learning rate
-
-# Calculate the epsilon reduction step
+final_epsilon = 0.15
+epsilon_reduction_episodes = 1500000
+gamma = 0.5  # Discount factor
+alpha = 0.5  # Learning rate
+epsilon = initial_epsilon
 epsilon_step = (initial_epsilon - final_epsilon) / epsilon_reduction_episodes
 
-# Initialize epsilon with the initial value
-epsilon = initial_epsilon
 
-
-def choose_action(state, epsilon):
+def choose_action(state):
+    global epsilon
     if np.random.rand() < epsilon:
         return np.random.randint(num_actions)
     else:
@@ -30,6 +26,7 @@ def choose_action(state, epsilon):
 
 
 def update_Q_value(state, action, reward, next_state, alpha, gamma):
+    global Q_table
     best_next_action = np.argmax(Q_table[next_state])
     Q_table[state, action] += alpha * \
         (reward + gamma * Q_table[next_state,
@@ -83,71 +80,6 @@ def decode_state(state):
     return board
 
 
-def train_ai(num_episodes, decay_rate, alpha, gamma, check_game_state_fn, save_interval=100000):
-    global epsilon  # Ensure epsilon is declared as global
-
-    for episode in range(num_episodes):
-        board = Board()  # Initialize a new game
-        game_over = False
-        current_player = 'X'  # Starting player for the game
-
-        while not game_over:
-            state = encode_state(board.board)
-            action = choose_action(state, epsilon)
-            row, col = action // 3, action % 3
-
-            if board.make_move(row, col, current_player):
-                new_state = encode_state(board.board)
-                # Pass the game board as an argument
-                game_over = check_game_state_fn(board)
-                reward = get_reward(board, game_over, current_player)
-                update_Q_value(state, action, reward, new_state, alpha, gamma)
-
-                current_player = 'O' if current_player == 'X' else 'X'
-
-        if epsilon > final_epsilon:
-            epsilon -= epsilon_step
-
-        if (episode + 1) % save_interval == 0:
-            # Save the Q-table periodically
-            save_q_table(f"q_table.npy")
-            print(f"Save of episode {episode + 1}/{num_episodes} completed")
-
-        if (episode + 1) % 1000 == 0:  # Print every 1000th episode
-            print(f"Episode {episode + 1}/{num_episodes} completed")
-
-    # Save the final Q-table after training
-    save_q_table()
-    print("Training completed and final Q-table saved.")
-
-
-def get_reward(board, game_over, player):
-    # Check if the game is over and who the winner is
-    if game_over:
-        if board.check_win(player):
-            return 2  # AI wins
-        elif board.check_tie():
-            return 0.5  # It's a tie
-        else:
-            return -1  # Opponent wins
-    else:
-        # Check for potential opponent wins in rows, columns, and diagonals
-        opponent = "X" if player == "O" else "O"
-        for row in range(3):
-            for col in range(3):
-                if board.board[row][col] == ' ':
-                    # Simulate the opponent's move
-                    board.board[row][col] = opponent
-                    if board.check_win(opponent):
-                        # If the opponent wins with this move, block it
-                        board.board[row][col] = ' '  # Revert the move
-                        return 1  # Positive reward for blocking the opponent
-                    else:
-                        board.board[row][col] = ' '  # Revert the move
-
-        return -0.1  # Penalize each move that doesn't lead to a win or block
-
-
 def save_q_table(filename="q_table.npy"):
     np.save(filename, Q_table)
 
@@ -160,21 +92,65 @@ def load_q_table(filename="q_table.npy"):
         Q_table = np.zeros((num_states, num_actions))
 
 
+def train_ai(num_episodes, decay_rate, alpha, gamma, check_game_state_fn, save_interval=100000):
+    global epsilon  # Ensure epsilon is declared as global
+
+    for episode in range(num_episodes):
+        board = Board()  # Initialize a new game
+        game_over = False
+        current_player = 'X'  # Starting player for the game
+        move_count = 0  # Track number of moves in this episode
+        total_reward = 0  # Total reward accumulated in this episode
+        q_value_changes = 0  # Track the sum of changes in Q-values
+
+        while not game_over:
+            state = encode_state(board.board)
+            action = choose_action(state)
+            row, col = action // 3, action % 3
+
+            if board.make_move(row, col, current_player):
+                new_state = encode_state(board.board)
+                game_over = check_game_state_fn(board, current_player)
+                reward = get_reward(board, game_over, current_player)
+
+                # Capture old Q-value for logging
+                old_q_value = Q_table[state, action]
+                update_Q_value(state, action, reward, new_state, alpha, gamma)
+                q_value_change = abs(Q_table[state, action] - old_q_value)
+                q_value_changes += q_value_change
+
+                current_player = 'O' if current_player == 'X' else 'X'
+                move_count += 1
+                total_reward += reward
+
+        avg_reward = total_reward / move_count if move_count > 0 else 0
+        avg_q_value_change = q_value_changes / move_count if move_count > 0 else 0
+
+        if episode % 1000 == 0:
+            avg_reward = total_reward / move_count if move_count > 0 else 0
+            avg_q_value_change = q_value_changes / move_count if move_count > 0 else 0
+            print(f"Episode {episode + 1}/{num_episodes} completed. Epsilon: {epsilon:.4f}, "
+                  f"Moves: {move_count}, Avg Reward: {avg_reward:.4f}, Avg Q-value Change: {avg_q_value_change:.4f}")
+
+        if epsilon > final_epsilon:
+            epsilon -= epsilon_step
+
+        if (episode + 1) % save_interval == 0:
+            save_q_table(f"q_table.npy")
+            print(f"Saved Q-table at episode {episode + 1}")
+
+    save_q_table("q_table.npy")
+    print("Training completed. Final Q-table saved.")
+
+
 if __name__ == "__main__":
     print("Script started")
     load_q_table()  # Load the trained Q-table
-    num_episodes = 2000000  # More episodes might be needed
-    decay_rate = 0.999   # Adjust as needed
-    alpha = 0.2           # Learning rate
-    gamma = 0.9           # Discount factor
+    num_episodes = 2000000  # Number of episodes for training
+    decay_rate = 0.3   # Adjust as needed
+    alpha = 0.2          # Learning rate
+    gamma = 0.9          # Discount factor
 
-    print("Starting training...")
-
-    train_ai(num_episodes, decay_rate, alpha, gamma,
-             check_game_state)  # Pass check_game_state function
-
-    print("Training completed.")
-
-    save_q_table()
-
-    print("Q-table saved.")
+    print("Starting AI training...")
+    train_ai(num_episodes, decay_rate, alpha, gamma, check_game_state)
+    print("AI training completed.")
